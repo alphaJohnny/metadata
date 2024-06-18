@@ -86,28 +86,38 @@ def display_metadata(metadata, issues):
         tree.insert("", "end", values=(key, value, issues.get(key, '')))
 
 def on_select_file():
-    file_path = filedialog.askopenfilename(filetypes=[
-        ("All Files", "*.*"),
-        ("Excel files", "*.xlsx"),
-        ("PDF files", "*.pdf"),
-        ("Image files", "*.jpg;*.jpeg;*.png;*.gif")
-    ])
-    if file_path:
-        if file_path.endswith('.xlsx'):
-            metadata = get_excel_metadata(file_path)
-        elif file_path.endswith('.pdf'):
-            metadata = get_pdf_metadata(file_path)
-        elif file_path.lower().endswith(('.jpg', '.jpeg', '.png', '.gif')):
-            metadata = get_image_metadata(file_path)
-        else:
-            messagebox.showerror("Unsupported File", "The selected file type is not supported.")
+    try: 
+        file_path = filedialog.askopenfilename(filetypes=[
+            ("All Files", "*.*"),
+            ("Excel files", "*.xlsx"),
+            ("PDF files", "*.pdf"),
+            ("Image files", "*.jpg;*.jpeg;*.png;*.gif")
+        ])
+
+        if not file_path:
+            messagebox.showwarning("No Selection", "No file was selected.")
             return
+
+        if file_path:
+            if file_path.endswith('.xlsx'):
+                metadata = get_excel_metadata(file_path)
+            elif file_path.endswith('.pdf'):
+                metadata = get_pdf_metadata(file_path)
+            elif file_path.lower().endswith(('.jpg', '.jpeg', '.png', '.gif')):
+                metadata = get_image_metadata(file_path)
+            else:
+                messagebox.showerror("Unsupported File", "The selected file type is not supported.")
+                return
 
         issues = compare_to_industry_standards(metadata)
         display_metadata(metadata, issues)
         file_label.config(text=f"Selected file: {file_path}")
         global selected_file
         selected_file = file_path
+
+    except Exception as e:
+        messagebox.showerror("Error", f"An error occurred while selecting the file: {str(e)}")
+
 
 def on_save():
     if not selected_file:
