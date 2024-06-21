@@ -1,10 +1,11 @@
 import os
-import subprocess
 import hashlib
-from tkinter import Tk, filedialog, Label, Button, ttk, messagebox
+import platform
+import tkinter
+from tkinter import Tk, filedialog, Label, Button, ttk, messagebox, font
 from openpyxl import load_workbook
 from datetime import datetime
-from PyPDF2 import PdfFileReader
+from PyPDF2 import PdfReader
 from PIL import Image
 from PIL.ExifTags import TAGS
 
@@ -34,8 +35,8 @@ def get_excel_metadata(file_path):
 def get_pdf_metadata(file_path):
     """Retrieve metadata from a PDF file."""
     with open(file_path, 'rb') as f:
-        reader = PdfFileReader(f)
-        metadata = reader.getDocumentInfo()
+        reader = PdfReader(f)
+        metadata = reader.metadata
     
     metadata_dict = {key[1:]: value for key, value in metadata.items()}
     return metadata_dict
@@ -50,13 +51,12 @@ def get_image_metadata(file_path):
 
 def update_file_system_dates(file_path, created, modified):
     """Update file system creation and modification dates to match file metadata."""
-    if created:
-        created_timestamp = datetime.timestamp(created)
-        subprocess.run(['touch', '-t', datetime.fromtimestamp(created_timestamp).strftime('%Y%m%d%H%M.%S'), file_path])
-
     if modified:
-        modified_timestamp = datetime.timestamp(modified)
-        subprocess.run(['touch', '-mt', datetime.fromtimestamp(modified_timestamp).strftime('%Y%m%d%H%M.%S'), file_path])
+        os.utime(file_path, (modified.timestamp(), modified.timestamp()))
+    
+    # Note: Setting creation time is not universally supported and may not work on all systems
+    if created and hasattr(os, 'utime') and hasattr(os.utime, 'ns'):
+        os.utime(file_path, ns=(created.timestamp() * 1e9, os.path.getmtime(file_path) * 1e9))
 
 def calculate_hash(file_path, algorithm='sha256'):
     """Calculate and return the hash of the file."""
@@ -69,30 +69,23 @@ def calculate_hash(file_path, algorithm='sha256'):
 def compare_to_industry_standards(metadata):
     """Compare metadata to industry standards and identify potential issues."""
     issues = {}
-    # Example standards
     if metadata.get('Creator') is None:
         issues['Creator'] = 'Missing creator'
-    if metadata.get('Revision') is None or not metadata['Revision'].isdigit():
+    if metadata.get('Revision') is None or not str(metadata['Revision']).isdigit():
         issues['Revision'] = 'Invalid revision number'
     
-    # Add more checks as needed
     return issues
 
 def display_metadata(metadata, issues):
     """Display metadata in a table with potential issues."""
     for item in tree.get_children():
         tree.delete(item)
-    for row, (key, value) in enumerate(metadata.items()):
-        tree.insert("", "end", values=(key, value, issues.get(key, '')))
+    for key, value in metadata.items():
+        tree.insert("", "end", values=(key, str(value), issues.get(key, '')))
 
 def on_select_file():
     try:
-        file_path = filedialog.askopenfilename(filetypes=[
-            ("All Files", "*.*"),
-            ("Excel files", "*.xlsx"),
-            ("PDF files", "*.pdf"),
-            ("Image files", "*.jpg;*.jpeg;*.png;*.gif")
-        ])
+        file_path = filedialog.askopenfilename(filetypes=[])
         if not file_path:
             messagebox.showwarning("No Selection", "No file was selected.")
             return
@@ -116,6 +109,38 @@ def on_select_file():
     except Exception as e:
         messagebox.showerror("Error", f"An error occurred while selecting the file: {str(e)}")
 
+def on_double_click(event):
+    """Handle double click event to edit metadata."""
+    item = tree.identify('item', event.x, event.y)
+    column = tree.identify_column(event.x)
+
+    if column == '#2':
+        x, y, width, height = tree.bbox(item, column)
+        
+        value = tree.item(item, 'values')[1]
+
+        entry_edit = ttk.Entry(tree)
+        entry_edit.insert(0, value)
+        entry_edit.select_range(0, 'end')
+        entry_edit.focus()
+
+        entry_edit.place(x=x, y=y, width=width, height=height)
+
+        def save_edit(event=None):
+            """Save the edited value to the treeview."""
+            tree.set(item, column=1, value=entry_edit.get())
+            entry_edit.destroy()
+
+        def cancel_edit(event=None):
+            """Cancel the edit without saving."""
+            entry_edit.destroy()
+
+        entry_edit.bind('<Return>', save_edit)
+        entry_edit.bind('<Escape>', cancel_edit)
+        entry_edit.bind('<FocusOut>', cancel_edit)
+        
+        root.after(50, entry_edit.focus_force)
+
 def on_save():
     if not selected_file:
         messagebox.showerror("Error", "No file selected")
@@ -135,19 +160,35 @@ def on_save():
         wb.properties.keywords = new_metadata.get('Keywords', wb.properties.keywords)
         wb.properties.description = new_metadata.get('Description', wb.properties.description)
         wb.properties.lastModifiedBy = new_metadata.get('Last Modified By', wb.properties.lastModifiedBy)
-        wb.properties.revision = str(int(wb.properties.revision) + 1) if wb.properties.revision else '1'
-        wb.properties.created = new_metadata.get('Created', wb.properties.created)
-        wb.properties.modified = new_metadata.get('Modified', wb.properties.modified)
+        wb.properties.revision = str(int(new_metadata.get('Revision', 0)) + 1)
         wb.properties.category = new_metadata.get('Category', wb.properties.category)
         wb.properties.contentStatus = new_metadata.get('Content Status', wb.properties.contentStatus)
         wb.properties.language = new_metadata.get('Language', wb.properties.language)
         wb.properties.identifier = new_metadata.get('Identifier', wb.properties.identifier)
         
+        created = new_metadata.get('Created')
+        modified = new_metadata.get('Modified')
+
+        if created:
+            try:
+                created = datetime.strptime(created, "%Y-%m-%d %H:%M:%S")
+                wb.properties.created = created
+            except ValueError:
+                messagebox.showerror("Error", "Incorrect date format for 'Created'. Use YYYY-MM-DD HH:MM:SS")
+                return
+
+        if modified:
+            try:
+                modified = datetime.strptime(modified, "%Y-%m-%d %H:%M:%S")
+                wb.properties.modified = modified
+            except ValueError:
+                messagebox.showerror("Error", "Incorrect date format for 'Modified'. Use YYYY-MM-DD HH:MM:SS")
+                return
+        
         wb.save(selected_file)
         
-        created = datetime.strptime(new_metadata['Created'], "%Y-%m-%d %H:%M:%S") if 'Created' in new_metadata else None
-        modified = datetime.strptime(new_metadata['Modified'], "%Y-%m-%d %H:%M:%S") if 'Modified' in new_metadata else None
         update_file_system_dates(selected_file, created, modified)
+
     else:
         messagebox.showerror("Unsupported File", "Saving metadata is only supported for Excel files in this version.")
         return
@@ -162,6 +203,25 @@ root = Tk()
 root.title("Forensic Audit Tool")
 root.geometry("800x600")
 
+# Mac-specific adjustments
+if platform.system() == 'Darwin':  # Darwin is the system name for macOS
+    try:
+        from tkmacosx import Button as MacButton
+        Button = MacButton  # Use tkmacosx Button if available
+    except ImportError:
+        pass  # Fall back to standard tkinter Button if tkmacosx is not installed
+    
+    # Adjust font size for better readability on Mac
+    default_font = font.nametofont("TkDefaultFont")
+    default_font.configure(size=12)
+    root.option_add("*Font", default_font)
+
+    # Try to set native macOS appearance
+    try:
+        root.tk.call('::tk::unsupported::MacWindowStyle', 'useTheme', 'true')
+    except tkinter.TclError:
+        pass  # Ignore if the command is not available
+
 selected_file = None
 
 # File selection
@@ -171,12 +231,21 @@ select_button = Button(root, text="Select File", command=on_select_file)
 select_button.pack(pady=10)
 
 # Metadata table
+style = ttk.Style()
+style.configure("Treeview", rowheight=25)  # Adjust row height for better touch/click targets
+
 columns = ('Property', 'Value', 'Issues')
-tree = ttk.Treeview(root, columns=columns, show='headings')
+tree = ttk.Treeview(root, columns=columns, show='headings', selectmode='browse')
 tree.heading('Property', text='Property')
 tree.heading('Value', text='Value')
 tree.heading('Issues', text='Issues')
+tree.column('Property', width=150)
+tree.column('Value', width=300)
+tree.column('Issues', width=200)
 tree.pack(pady=20, fill='both', expand=True)
+
+# Bind the double click event to the handler
+tree.bind('<Double-1>', on_double_click)
 
 # Save button
 save_button = Button(root, text="Save Changes", command=on_save)
