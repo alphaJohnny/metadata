@@ -2,12 +2,44 @@ import os
 import hashlib
 import platform
 import tkinter
-from tkinter import Tk, filedialog, Label, Button, ttk, messagebox, font
+from tkinter import Tk, filedialog, Label, Button, ttk, messagebox, font, simpledialog
 from openpyxl import load_workbook
 from datetime import datetime
 from PyPDF2 import PdfReader
 from PIL import Image
 from PIL.ExifTags import TAGS
+from tkcalendar import DateEntry
+
+class DateTimeDialog(simpledialog.Dialog):
+    def __init__(self, parent, title, initial_date=None):
+        self.initial_date = initial_date or datetime.now()
+        super().__init__(parent, title)
+
+    def body(self, master):
+        self.calendar = DateEntry(master, width=12, background='darkblue',
+                                  foreground='white', borderwidth=2, date_pattern='y-mm-dd',
+                                  year=self.initial_date.year, month=self.initial_date.month, day=self.initial_date.day)
+        self.calendar.grid(row=0, column=0, padx=5, pady=5, sticky="we")
+
+        self.time_frame = ttk.Frame(master)
+        self.time_frame.grid(row=1, column=0, padx=5, pady=5, sticky="we")
+
+        self.hour = ttk.Spinbox(self.time_frame, from_=0, to=23, width=3, format="%02.0f")
+        self.hour.grid(row=0, column=0)
+        ttk.Label(self.time_frame, text=":").grid(row=0, column=1)
+        self.minute = ttk.Spinbox(self.time_frame, from_=0, to=59, width=3, format="%02.0f")
+        self.minute.grid(row=0, column=2)
+
+        self.hour.set(f"{self.initial_date.hour:02d}")
+        self.minute.set(f"{self.initial_date.minute:02d}")
+
+        return self.calendar
+
+    def apply(self):
+        date = self.calendar.get_date()
+        hour = int(self.hour.get())
+        minute = int(self.minute.get())
+        self.result = datetime(date.year, date.month, date.day, hour, minute)
 
 def get_excel_metadata(file_path):
     """Retrieve metadata from an Excel file."""
@@ -115,31 +147,45 @@ def on_double_click(event):
     column = tree.identify_column(event.x)
 
     if column == '#2':
-        x, y, width, height = tree.bbox(item, column)
-        
+        key = tree.item(item, 'values')[0]
         value = tree.item(item, 'values')[1]
 
-        entry_edit = ttk.Entry(tree)
-        entry_edit.insert(0, value)
-        entry_edit.select_range(0, 'end')
-        entry_edit.focus()
+        if key in ['Created', 'Modified']:
+            try:
+                initial_date = datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                initial_date = datetime.now()
+            
+            root.attributes('-topmost', False)
+            dialog = DateTimeDialog(root, f"Select {key} Date and Time", initial_date)
+            root.attributes('-topmost', True)
+            if dialog.result:
+                new_value = dialog.result.strftime("%Y-%m-%d %H:%M:%S")
+                tree.set(item, column=1, value=new_value)
+        else:
+            x, y, width, height = tree.bbox(item, column)
+            
+            entry_edit = ttk.Entry(tree)
+            entry_edit.insert(0, value)
+            entry_edit.select_range(0, 'end')
+            entry_edit.focus()
 
-        entry_edit.place(x=x, y=y, width=width, height=height)
+            entry_edit.place(x=x, y=y, width=width, height=height)
 
-        def save_edit(event=None):
-            """Save the edited value to the treeview."""
-            tree.set(item, column=1, value=entry_edit.get())
-            entry_edit.destroy()
+            def save_edit(event=None):
+                """Save the edited value to the treeview."""
+                tree.set(item, column=1, value=entry_edit.get())
+                entry_edit.destroy()
 
-        def cancel_edit(event=None):
-            """Cancel the edit without saving."""
-            entry_edit.destroy()
+            def cancel_edit(event=None):
+                """Cancel the edit without saving."""
+                entry_edit.destroy()
 
-        entry_edit.bind('<Return>', save_edit)
-        entry_edit.bind('<Escape>', cancel_edit)
-        entry_edit.bind('<FocusOut>', cancel_edit)
-        
-        root.after(50, entry_edit.focus_force)
+            entry_edit.bind('<Return>', save_edit)
+            entry_edit.bind('<Escape>', cancel_edit)
+            entry_edit.bind('<FocusOut>', cancel_edit)
+            
+            root.after(50, entry_edit.focus_force)
 
 def on_save():
     if not selected_file:
