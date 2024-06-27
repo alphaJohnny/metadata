@@ -16,6 +16,9 @@ from tkinter import ttk
 from Foundation import NSDate, NSFileManager, NSURL
 from win32_setctime import setctime
 from openpyxl.packaging.core import DocumentProperties
+from dateutil import parser as date_parser
+import pytz
+
 
 class ProgressDialog:
     def __init__(self, parent, title="Processing"):
@@ -68,6 +71,20 @@ class DateTimeDialog(simpledialog.Dialog):
         hour = int(self.hour.get())
         minute = int(self.minute.get())
         self.result = datetime(date.year, date.month, date.day, hour, minute)
+
+def parse_date(date_string):
+    try:
+        # Parse the date string, forcing it to UTC
+        parsed_date = date_parser.parse(date_string)
+        if parsed_date.tzinfo is not None:
+            parsed_date = parsed_date.astimezone(pytz.UTC)
+        else:
+            parsed_date = pytz.UTC.localize(parsed_date)
+        # Return the date without timezone info
+        return parsed_date.replace(tzinfo=None)
+    except ValueError:
+        # If parsing fails, return None
+        return None
 
 def get_excel_metadata(file_path):
     """Retrieve metadata from an Excel file."""
@@ -335,37 +352,29 @@ def on_save():
             core_props.keywords = new_metadata.get('Keywords', core_props.keywords)
             core_props.comments = new_metadata.get('Description', core_props.comments)
             core_props.last_modified_by = new_metadata.get('Last Modified By', core_props.last_modified_by)
-            core_props.revision = int(new_metadata.get('Revision', 0))
+            
+            # Handle revision number
+            revision = new_metadata.get('Revision', '0')
+            core_props.revision = int(revision) if revision.isdigit() else 0
+            
             core_props.category = new_metadata.get('Category', core_props.category)
             core_props.content_status = new_metadata.get('Content Status', core_props.content_status)
             core_props.language = new_metadata.get('Language', core_props.language)
             core_props.identifier = new_metadata.get('Identifier', core_props.identifier)
             
-            created = new_metadata.get('Created')
-            modified = new_metadata.get('Modified')
+            # Handle dates
+            created = parse_date(new_metadata.get('Created'))
+            modified = parse_date(new_metadata.get('Modified'))
 
             if created:
-                try:
-                    created = datetime.strptime(created, "%Y-%m-%d %H:%M:%S")
-                    core_props.created = created
-                except ValueError as e:
-                    messagebox.showerror("Error", f"Incorrect date format for 'Created': {e}")
-                    progress.stop()
-                    return
-
+                core_props.created = created
             if modified:
-                try:
-                    modified = datetime.strptime(modified, "%Y-%m-%d %H:%M:%S")
-                    core_props.modified = modified
-                except ValueError as e:
-                    messagebox.showerror("Error", f"Incorrect date format for 'Modified': {e}")
-                    progress.stop()
-                    return
+                core_props.modified = modified
             
             doc.save(selected_file)
             
             update_file_system_dates(selected_file, created, modified)
-
+            
         else:
             messagebox.showerror("Unsupported File", "Saving metadata is only supported for Excel and Word files in this version.")
             progress.stop()
