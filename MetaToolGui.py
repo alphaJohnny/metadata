@@ -9,6 +9,34 @@ from PyPDF2 import PdfReader
 from PIL import Image
 from PIL.ExifTags import TAGS
 from tkcalendar import DateEntry
+from docx import Document
+from docx.opc.coreprops import CoreProperties
+import tkinter as tk
+from tkinter import ttk
+from Foundation import NSDate, NSFileManager, NSURL
+from win32_setctime import setctime
+from openpyxl.packaging.core import DocumentProperties
+
+class ProgressDialog:
+    def __init__(self, parent, title="Processing"):
+        self.top = tk.Toplevel(parent)
+        self.top.title(title)
+        self.top.geometry("300x100")
+        self.top.transient(parent)
+        self.top.grab_set()
+
+        self.progress = ttk.Progressbar(self.top, mode="indeterminate", length=280)
+        self.progress.pack(pady=20)
+
+        self.label = ttk.Label(self.top, text="Please wait...")
+        self.label.pack()
+
+    def start(self):
+        self.progress.start()
+
+    def stop(self):
+        self.progress.stop()
+        self.top.destroy()
 
 class DateTimeDialog(simpledialog.Dialog):
     def __init__(self, parent, title, initial_date=None):
@@ -81,14 +109,45 @@ def get_image_metadata(file_path):
     metadata_dict = {TAGS.get(tag): value for tag, value in info.items()} if info else {}
     return metadata_dict
 
+def get_docx_metadata(file_path):
+    """Retrieve metadata from a DOCX file."""
+    doc = Document(file_path)
+    core_props = doc.core_properties
+    
+    metadata_dict = {
+        'Title': core_props.title,
+        'Subject': core_props.subject,
+        'Creator': core_props.author,
+        'Keywords': core_props.keywords,
+        'Description': core_props.comments,
+        'Last Modified By': core_props.last_modified_by,
+        'Revision': core_props.revision,
+        'Created': core_props.created,
+        'Modified': core_props.modified,
+        'Category': core_props.category,
+        'Content Status': core_props.content_status,
+        'Language': core_props.language,
+        'Identifier': core_props.identifier
+    }
+    
+    return metadata_dict
+
 def update_file_system_dates(file_path, created, modified):
     """Update file system creation and modification dates to match file metadata."""
     if modified:
         os.utime(file_path, (modified.timestamp(), modified.timestamp()))
     
-    # Note: Setting creation time is not universally supported and may not work on all systems
-    if created and hasattr(os, 'utime') and hasattr(os.utime, 'ns'):
-        os.utime(file_path, ns=(created.timestamp() * 1e9, os.path.getmtime(file_path) * 1e9))
+    if created:
+        if platform.system() == 'Darwin':  # macOS
+            try:
+                from Foundation import NSDate, NSFileManager, NSURL
+            except ImportError:
+                pass  # Handle the case when pyobjc is not installed
+        elif platform.system() == 'Windows':
+            try:
+                from win32_setctime import setctime
+            except ImportError:
+                pass  # Handle the case when win32-setctime is not installed
 
 def calculate_hash(file_path, algorithm='sha256'):
     """Calculate and return the hash of the file."""
@@ -113,11 +172,17 @@ def display_metadata(metadata, issues):
     for item in tree.get_children():
         tree.delete(item)
     for key, value in metadata.items():
+        print(f"Displaying metadata: {key} = {value}")  # Debug print
         tree.insert("", "end", values=(key, str(value), issues.get(key, '')))
+    
+    # Debug print of all treeview items
+    print("All treeview items:")
+    for item in tree.get_children():
+        print(tree.item(item, 'values'))
 
 def on_select_file():
     try:
-        file_path = filedialog.askopenfilename(filetypes=[])
+        file_path = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx"), ("PDF files", "*.pdf"), ("Image files", "*.jpg *.jpeg *.png *.gif"), ("Word files", "*.docx")])
         if not file_path:
             messagebox.showwarning("No Selection", "No file was selected.")
             return
@@ -128,6 +193,8 @@ def on_select_file():
             metadata = get_pdf_metadata(file_path)
         elif file_path.lower().endswith(('.jpg', '.jpeg', '.png', '.gif')):
             metadata = get_image_metadata(file_path)
+        elif file_path.endswith('.docx'):
+            metadata = get_docx_metadata(file_path)
         else:
             messagebox.showerror("Unsupported File", "The selected file type is not supported.")
             return
@@ -140,6 +207,7 @@ def on_select_file():
 
     except Exception as e:
         messagebox.showerror("Error", f"An error occurred while selecting the file: {str(e)}")
+
 
 def on_double_click(event):
     """Handle double click event to edit metadata."""
@@ -168,13 +236,13 @@ def on_double_click(event):
             entry_edit = ttk.Entry(tree)
             entry_edit.insert(0, value)
             entry_edit.select_range(0, 'end')
-            entry_edit.focus()
 
             entry_edit.place(x=x, y=y, width=width, height=height)
 
             def save_edit(event=None):
                 """Save the edited value to the treeview."""
-                tree.set(item, column=1, value=entry_edit.get())
+                new_value = entry_edit.get()
+                tree.set(item, column=1, value=new_value)
                 entry_edit.destroy()
 
             def cancel_edit(event=None):
@@ -185,11 +253,18 @@ def on_double_click(event):
             entry_edit.bind('<Escape>', cancel_edit)
             entry_edit.bind('<FocusOut>', cancel_edit)
             
-            root.after(50, entry_edit.focus_force)
+            # Use after() to schedule the focus_force() call
+            root.after(100, entry_edit.focus_force)
+
 
 def on_save():
+    progress = ProgressDialog(root, "Saving Metadata")
+    progress.start()
+    root.update()
+    
     if not selected_file:
         messagebox.showerror("Error", "No file selected")
+        progress.stop()
         return
 
     new_metadata = {}
@@ -198,51 +273,113 @@ def on_save():
         value = tree.item(child, 'values')[1]
         new_metadata[key] = value
     
-    if selected_file.endswith('.xlsx'):
-        wb = load_workbook(selected_file)
-        wb.properties.title = new_metadata.get('Title', wb.properties.title)
-        wb.properties.subject = new_metadata.get('Subject', wb.properties.subject)
-        wb.properties.creator = new_metadata.get('Creator', wb.properties.creator)
-        wb.properties.keywords = new_metadata.get('Keywords', wb.properties.keywords)
-        wb.properties.description = new_metadata.get('Description', wb.properties.description)
-        wb.properties.lastModifiedBy = new_metadata.get('Last Modified By', wb.properties.lastModifiedBy)
-        wb.properties.revision = str(int(new_metadata.get('Revision', 0)) + 1)
-        wb.properties.category = new_metadata.get('Category', wb.properties.category)
-        wb.properties.contentStatus = new_metadata.get('Content Status', wb.properties.contentStatus)
-        wb.properties.language = new_metadata.get('Language', wb.properties.language)
-        wb.properties.identifier = new_metadata.get('Identifier', wb.properties.identifier)
-        
-        created = new_metadata.get('Created')
-        modified = new_metadata.get('Modified')
+    try:
+        if selected_file.endswith('.xlsx'):
+            wb = load_workbook(selected_file)
+            
+            # Create a new DocumentProperties object
+            new_props = DocumentProperties()
+            
+            # Update all properties
+            new_props.title = new_metadata.get('Title', wb.properties.title)
+            new_props.subject = new_metadata.get('Subject', wb.properties.subject)
+            new_props.creator = new_metadata.get('Creator', wb.properties.creator)
+            new_props.keywords = new_metadata.get('Keywords', wb.properties.keywords)
+            new_props.description = new_metadata.get('Description', wb.properties.description)
+            new_props.lastModifiedBy = new_metadata.get('Last Modified By', wb.properties.lastModifiedBy)
+            
+            # Update revision number
+            revision = new_metadata.get('Revision', '0')
+            new_props.revision = str(int(revision)) if revision.isdigit() else '0'
+            
+            new_props.category = new_metadata.get('Category', wb.properties.category)
+            new_props.contentStatus = new_metadata.get('Content Status', wb.properties.contentStatus)
+            new_props.language = new_metadata.get('Language', wb.properties.language)
+            new_props.identifier = new_metadata.get('Identifier', wb.properties.identifier)
+            
+            created = new_metadata.get('Created')
+            modified = new_metadata.get('Modified')
 
-        if created:
-            try:
-                created = datetime.strptime(created, "%Y-%m-%d %H:%M:%S")
-                wb.properties.created = created
-            except ValueError:
-                messagebox.showerror("Error", "Incorrect date format for 'Created'. Use YYYY-MM-DD HH:MM:SS")
-                return
+            if created:
+                try:
+                    created = datetime.strptime(created, "%Y-%m-%d %H:%M:%S")
+                    new_props.created = created
+                except ValueError as e:
+                    messagebox.showerror("Error", f"Incorrect date format for 'Created': {e}")
+                    progress.stop()
+                    return
 
-        if modified:
-            try:
-                modified = datetime.strptime(modified, "%Y-%m-%d %H:%M:%S")
-                wb.properties.modified = modified
-            except ValueError:
-                messagebox.showerror("Error", "Incorrect date format for 'Modified'. Use YYYY-MM-DD HH:MM:SS")
-                return
-        
-        wb.save(selected_file)
-        
-        update_file_system_dates(selected_file, created, modified)
+            if modified:
+                try:
+                    modified = datetime.strptime(modified, "%Y-%m-%d %H:%M:%S")
+                    new_props.modified = modified
+                except ValueError as e:
+                    messagebox.showerror("Error", f"Incorrect date format for 'Modified': {e}")
+                    progress.stop()
+                    return
+            
+            # Assign the new properties to the workbook
+            wb.properties = new_props
+            
+            wb.save(selected_file)
+            
+            update_file_system_dates(selected_file, created, modified)
 
-    else:
-        messagebox.showerror("Unsupported File", "Saving metadata is only supported for Excel files in this version.")
-        return
+        elif selected_file.endswith('.docx'):
+            doc = Document(selected_file)
+            core_props = doc.core_properties
+            
+            core_props.title = new_metadata.get('Title', core_props.title)
+            core_props.subject = new_metadata.get('Subject', core_props.subject)
+            core_props.author = new_metadata.get('Creator', core_props.author)
+            core_props.keywords = new_metadata.get('Keywords', core_props.keywords)
+            core_props.comments = new_metadata.get('Description', core_props.comments)
+            core_props.last_modified_by = new_metadata.get('Last Modified By', core_props.last_modified_by)
+            core_props.revision = int(new_metadata.get('Revision', 0))
+            core_props.category = new_metadata.get('Category', core_props.category)
+            core_props.content_status = new_metadata.get('Content Status', core_props.content_status)
+            core_props.language = new_metadata.get('Language', core_props.language)
+            core_props.identifier = new_metadata.get('Identifier', core_props.identifier)
+            
+            created = new_metadata.get('Created')
+            modified = new_metadata.get('Modified')
 
-    file_hash = calculate_hash(selected_file)
-    hash_label.config(text=f"File Hash (SHA-256): {file_hash}")
+            if created:
+                try:
+                    created = datetime.strptime(created, "%Y-%m-%d %H:%M:%S")
+                    core_props.created = created
+                except ValueError as e:
+                    messagebox.showerror("Error", f"Incorrect date format for 'Created': {e}")
+                    progress.stop()
+                    return
 
-    messagebox.showinfo("Success", "File metadata updated successfully")
+            if modified:
+                try:
+                    modified = datetime.strptime(modified, "%Y-%m-%d %H:%M:%S")
+                    core_props.modified = modified
+                except ValueError as e:
+                    messagebox.showerror("Error", f"Incorrect date format for 'Modified': {e}")
+                    progress.stop()
+                    return
+            
+            doc.save(selected_file)
+            
+            update_file_system_dates(selected_file, created, modified)
+
+        else:
+            messagebox.showerror("Unsupported File", "Saving metadata is only supported for Excel and Word files in this version.")
+            progress.stop()
+            return
+
+        file_hash = calculate_hash(selected_file)
+        hash_label.config(text=f"File Hash (SHA-256): {file_hash}")
+
+        progress.stop()
+        messagebox.showinfo("Success", "File metadata updated successfully")
+    except Exception as e:
+        progress.stop()
+        messagebox.showerror("Error", f"An error occurred while saving the metadata: {str(e)}")
+        print(f"Error details: {e}")
 
 # GUI setup
 root = Tk()
